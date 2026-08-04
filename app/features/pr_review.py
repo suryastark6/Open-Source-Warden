@@ -27,10 +27,16 @@ async def run(data: dict) -> str:
         f"- {f['filename']} ({f['status']})" for f in changed_files
     ) or "No files listed."
 
-    patch_text = "\n\n".join(
+    _MAX_PATCH_CHARS = 6_000
+    raw_patches = "\n\n".join(
         f"### {f['filename']}\n```diff\n{f['patch']}\n```"
         for f in changed_files
         if f.get("patch")
+    )
+    patch_text = (
+        raw_patches[:_MAX_PATCH_CHARS] + "\n... [diff truncated — open the PR to see remaining changes]"
+        if len(raw_patches) > _MAX_PATCH_CHARS
+        else raw_patches
     )
 
     user_message = (

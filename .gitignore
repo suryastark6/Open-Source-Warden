@@ -44,3 +44,12 @@ staging.zip
 staging/
 ISSUE_LOG.md
 
+# Setup wizard binaries
+ngrok.exe
+ngrok.EXE
+
+# Claude Code local session data
+.claude/
+
+issue_log/
+

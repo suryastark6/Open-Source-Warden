@@ -2,6 +2,7 @@
 
 import itertools
 import logging
+import time
 from typing import Any
 
 from github import Github, GithubException
@@ -10,6 +11,23 @@ from github.ContentFile import ContentFile
 from app.github.auth import get_github_client
 
 logger = logging.getLogger(__name__)
+
+# Module-level TTL cache shared across all GitHubClient instances.
+# When a new issue triggers triage → reproduction → onboarding in sequence,
+# the README and file contents are fetched only once from GitHub.
+_CACHE: dict[str, tuple[Any, float]] = {}
+_CACHE_TTL = 300  # seconds
+
+
+def _cache_get(key: str) -> Any:
+    entry = _CACHE.get(key)
+    if entry is not None and entry[1] > time.monotonic():
+        return entry[0]
+    return None
+
+
+def _cache_set(key: str, value: Any) -> None:
+    _CACHE[key] = (value, time.monotonic() + _CACHE_TTL)
 
 
 class GitHubClient:
@@ -20,24 +38,36 @@ class GitHubClient:
 
     def read_file(self, repo_full_name: str, path: str) -> str:
         """Return the decoded contents of a file, or an error message."""
+        key = f"file:{repo_full_name}:{path}"
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
         try:
             repo = self._gh.get_repo(repo_full_name)
             content: ContentFile = repo.get_contents(path)  # type: ignore[assignment]
             if isinstance(content, list):
                 return f"Path '{path}' is a directory, not a file."
-            return content.decoded_content.decode("utf-8", errors="replace")
+            result = content.decoded_content.decode("utf-8", errors="replace")
+            _cache_set(key, result)
+            return result
         except GithubException as exc:
             logger.warning("read_file failed for %s/%s: %s", repo_full_name, path, exc)
             return f"Could not read file '{path}': {exc.data.get('message', str(exc))}"
 
     def list_files(self, repo_full_name: str, path: str) -> list[dict[str, str]]:
         """List directory contents at *path* (empty string = repo root)."""
+        key = f"ls:{repo_full_name}:{path}"
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
         try:
             repo = self._gh.get_repo(repo_full_name)
             contents = repo.get_contents(path or "")
             if not isinstance(contents, list):
                 contents = [contents]
-            return [{"name": c.name, "path": c.path, "type": c.type} for c in contents]
+            result = [{"name": c.name, "path": c.path, "type": c.type} for c in contents]
+            _cache_set(key, result)
+            return result
         except GithubException as exc:
             logger.warning("list_files failed for %s/%s: %s", repo_full_name, path, exc)
             return []
@@ -53,38 +83,61 @@ class GitHubClient:
 
     def get_recent_issues(self, repo_full_name: str, count: int = 10) -> list[dict[str, Any]]:
         """Return up to *count* recently closed issues."""
+        key = f"issues:{repo_full_name}:{count}"
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
         try:
             repo = self._gh.get_repo(repo_full_name)
             issues = repo.get_issues(state="closed", sort="updated")
-            return [
+            result = [
                 {"number": i.number, "title": i.title, "labels": [lb.name for lb in i.labels]}
                 for i in itertools.islice(issues, count)
             ]
+            _cache_set(key, result)
+            return result
         except GithubException as exc:
             logger.warning("get_recent_issues failed for %s: %s", repo_full_name, exc)
             return []
 
     def get_readme(self, repo_full_name: str) -> str:
         """Fetch the repository README."""
+        key = f"readme:{repo_full_name}"
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
         try:
             repo = self._gh.get_repo(repo_full_name)
             readme = repo.get_readme()
-            return readme.decoded_content.decode("utf-8", errors="replace")
+            result = readme.decoded_content.decode("utf-8", errors="replace")
+            _cache_set(key, result)
+            return result
         except GithubException as exc:
             logger.warning("get_readme failed for %s: %s", repo_full_name, exc)
             return "README not found."
 
     def get_repo_labels(self, repo_full_name: str) -> list[str]:
         """Return all label names defined on the repository."""
+        key = f"labels:{repo_full_name}"
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
         try:
             repo = self._gh.get_repo(repo_full_name)
-            return [lb.name for lb in repo.get_labels()]
+            result = [lb.name for lb in repo.get_labels()]
+            _cache_set(key, result)
+            return result
         except GithubException as exc:
             logger.warning("get_repo_labels failed for %s: %s", repo_full_name, exc)
             return []
 
     def post_comment(self, repo_full_name: str, issue_number: int, body: str) -> None:
         """Post a comment on an issue or pull request."""
+        if not body or not body.strip():
+            logger.error(
+                "post_comment skipped for %s#%d: body is blank", repo_full_name, issue_number
+            )
+            return
         try:
             repo = self._gh.get_repo(repo_full_name)
             issue = repo.get_issue(issue_number)

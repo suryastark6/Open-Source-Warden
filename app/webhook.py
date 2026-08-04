@@ -1,5 +1,6 @@
 """GitHub webhook receiver, signature verifier, and event router."""
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -63,15 +64,28 @@ async def _handle_new_issue(data: dict) -> None:
             triage_result = await triage.run(data)
             await _post_comment(repo_full_name, issue_number, installation_id, triage_result)
 
-            # If triage flagged this as a bug, generate reproduction steps
-            if settings.FEATURE_REPRODUCTION and "bug" in triage_result.lower():
-                repro_result = await reproduction.run(data)
-                await _post_comment(repo_full_name, issue_number, installation_id, repro_result)
+            # Determine which follow-up features are needed, then run them in parallel.
+            run_repro = settings.FEATURE_REPRODUCTION and "bug" in triage_result.lower()
+            run_onboard = settings.FEATURE_ONBOARDING and triage.is_good_first_issue(triage_result)
 
-            # If triage flagged this as a good-first-issue, post onboarding guide
-            if settings.FEATURE_ONBOARDING and triage.is_good_first_issue(triage_result):
-                onboard_result = await onboarding.run(data)
-                await _post_comment(repo_full_name, issue_number, installation_id, onboard_result)
+            follow_up_tasks = []
+            if run_repro:
+                follow_up_tasks.append(reproduction.run(data))
+            if run_onboard:
+                follow_up_tasks.append(onboarding.run(data))
+
+            if follow_up_tasks:
+                follow_up_results = await asyncio.gather(*follow_up_tasks)
+                result_idx = 0
+                if run_repro:
+                    await _post_comment(
+                        repo_full_name, issue_number, installation_id, follow_up_results[result_idx]
+                    )
+                    result_idx += 1
+                if run_onboard:
+                    await _post_comment(
+                        repo_full_name, issue_number, installation_id, follow_up_results[result_idx]
+                    )
 
     except Exception as exc:
         logger.error("Issue handling failed for %s#%d: %s", repo_full_name, issue_number, exc, extra=extra)

@@ -183,4 +183,4 @@ This project is submitted under the **Community Impact — Open Source Tooling**
 
 ---
 
-*Authors: [Vuriti Sai Pranay](https://github.com/V-S-Pranay) · Suryanarayana Reddy*
+*Authors: [Vuriti Sai Pranay](https://github.com/V-S-Pranay) · [P Suryanarayana Reddy](https://github.com/suryastark6)
